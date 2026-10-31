@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LMS Simulator · Loan → Device Tiers</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="shell">
+
+    <header class="hero">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M12 2a1 1 0 0 1 .78.37l8 10a1 1 0 0 1-.12 1.41l-8 7a1 1 0 0 1-1.32 0l-8-7a1 1 0 0 1-.12-1.41l8-10A1 1 0 0 1 12 2Z"/></svg>
+        </div>
+        <div>
+          <div class="eyebrow">BLACK SWAN · MDM</div>
+          <h1>LMS Simulator</h1>
+          <p class="lede">Push every phone through the six loan-device tiers from a single pane. Feed Fineract hooks and timer ticks; the engine mirrors production reconcile exactly.</p>
+        </div>
+      </div>
+      <div class="hero-right">
+        <span id="modePill" class="mode-pill mode-off" title="live mode requires SUPABASE + FINERACT_WEBHOOK_SECRET">
+          <span class="dot-live"></span><span class="mode-text">OFFLINE</span>
+        </span>
+        <div class="hero-stats">
+          <div class="stat"><span class="stat-k" id="statPhones">0</span><span class="stat-v">phones</span></div>
+          <div class="stat"><span class="stat-k" id="statFeed">0</span><span class="stat-v">signals</span></div>
+        </div>
+      </div>
+    </header>
+
+    <section class="controls" aria-label="Add device">
+      <div class="controls-group controls-live">
+        <label class="field-label">Real device</label>
+        <select id="deviceSelect" class="device-select" title="pulled from Supabase devices"></select>
+        <button id="addLive" class="btn btn-primary" title="add the picked real device">
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M11 11V5h2v6h6v2h-6v6h-2v-6H5v-2z"/></svg>
+          Add
+        </button>
+      </div>
+      <div class="controls-group">
+        <label class="field-label">Sandbox</label>
+        <button id="addAndroid" class="btn btn-ghost">+ Android</button>
+        <button id="addIphone" class="btn btn-ghost">+ iPhone</button>
+      </div>
+      <div class="controls-group controls-right">
+        <button id="resetAll" class="btn btn-danger-ghost" title="clear sim state (does not touch Zoho)">Reset all</button>
+      </div>
+    </section>
+
+    <section class="ladder-wrap" aria-label="Tier lifecycle">
+      <div class="ladder" id="ladder"></div>
+    </section>
+
+    <main class="layout">
+      <section id="phones" class="phones" aria-label="Devices"></section>
+      <aside class="feed" aria-label="Signal feed">
+        <div class="feed-head">
+          <h2>Signals</h2>
+          <span class="muted small">Local engine · backend reconcile · newest first</span>
+        </div>
+        <div id="feed" class="feed-list"></div>
+      </aside>
+    </main>
+
+    <footer class="footer">
+      <span class="muted small">LMS Simulator · in-memory engine mirrors <code>backend/services/bridge/tiers.ts</code></span>
+    </footer>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
