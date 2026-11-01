@@ -15,7 +15,7 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
-const PORT = Number(Deno.env.get("SIM_PORT") ?? 8010);
+const PORT = Number(Deno.env.get("PORT") ?? Deno.env.get("SIM_PORT") ?? 8010);
 const DIR = new URL("./public/", import.meta.url);
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
