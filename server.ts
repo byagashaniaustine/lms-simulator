@@ -112,17 +112,25 @@ function tierFor(p: Phone): Tier {
   return "disbursed";
 }
 
+// Action text shown under each tier pill. Reflects what the backend actually
+// does for this enterprise's tier_groups + tier_announcements wiring — the
+// console puts the policy in Zoho groups, we just shift devices between them.
+// Disbursed / Due-2D / Overdue-2D are announcement-only; Locked is where the
+// profiles live; Released is a clean group (profiles detach on exit).
 function action(tier: Tier, p: Phone): string {
   switch (tier) {
-    case "undisbursed": return "baseline · full use";
-    case "disbursed": return "full use";
-    case "due_2d": return "reminder announcement";
-    case "overdue_2d":
+    case "undisbursed": return "baseline group · no action";
+    case "disbursed":   return "move to Disbursed group · no profiles, no announcement";
+    case "due_2d":      return "move to Due-2D group · fire Due-2D announcement";
+    case "overdue_2d":  return "move to Overdue-2D group · fire Overdue-2D announcement";
+    case "locked":
       return p.platform === "android"
-        ? "payment-only KIOSK + block installs"
-        : (p.supervised ? "restrictions + notice (no kiosk yet)" : "announcement only (unsupervised)");
-    case "locked": return 'LOCK device + "Pay now"';
-    case "released": return "unlock, drop kiosk/restrict → full use";
+        ? "move to lockedAndroids · push androidKiosk + AdroidRestrictions · fire Locked announcement"
+        : "move to Locked · push payfirst + reset-cmd + banner1 · fire Locked announcement";
+    case "released":
+      return p.platform === "android"
+        ? "move to ReleasedAndroids · profiles detach (clean group)"
+        : "move to Released · profiles detach (clean group)";
   }
 }
 
