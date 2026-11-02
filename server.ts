@@ -152,6 +152,12 @@ function addDaysISO(iso: string, days: number): string {
   return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(dt.getUTCDate()).padStart(2, "0")}`;
 }
 
+function daysBetweenISO(fromISO: string, toISO: string): number {
+  const [fy, fm, fd] = fromISO.split("-").map(Number);
+  const [ty, tm, td] = toISO.split("-").map(Number);
+  return Math.round((Date.UTC(ty, tm - 1, td) - Date.UTC(fy, fm - 1, fd)) / 86_400_000);
+}
+
 // --- loan_links writes (live mode only) --------------------------------
 async function closeActiveLink(deviceId: string): Promise<void> {
   if (!supa) return;
@@ -216,7 +222,26 @@ type FineractLoanSummary = {
   totalOutstanding: number;
 };
 
-type WebhookResponse = { data?: { trigger?: string; kind?: string; source?: string; result?: unknown; error?: string; note?: string } };
+type EnqueuedJob = { jobId: string; deviceId: string; loanId: string };
+type ApplyJobStatus = {
+  id: string;
+  state: "pending" | "in_progress" | "applied" | "failed" | "dead";
+  attempts: number;
+  max_attempts: number;
+  outcome?: unknown;
+  error_code?: string | null;
+  error_message?: string | null;
+  completed_at?: string | null;
+};
+type WebhookResponse = { data?: {
+  trigger?: string;
+  kind?: string;
+  source?: string;
+  result?: { enqueued?: EnqueuedJob[]; applied?: unknown[]; [k: string]: unknown } | null;
+  error?: string;
+  note?: string;
+  jobResults?: ApplyJobStatus[]; // populated by sim after polling, not from backend
+} };
 
 // Pace rapid-fire webhooks so the backend's `withLease("automation:<eid>")`
 // (an in-process mutex) doesn't reject the second one with a null result.
@@ -226,6 +251,31 @@ type WebhookResponse = { data?: { trigger?: string; kind?: string; source?: stri
 // 600ms is enough breathing room without making the UI feel sticky.
 const MIN_WEBHOOK_GAP_MS = /^(https?:\/\/)?(localhost|127\.)/.test(BACKEND_URL) ? 0 : 600;
 let lastWebhookAt = 0;
+
+// Poll a queued apply job (migration 016 / Level 2 async) until it settles.
+// The backend's drainApplyQueue runs on the worker loop (~5s tick), so most
+// jobs resolve in under 10s. We cap at ~30s to keep the sim UI responsive
+// even if the worker is backed up — unresolved jobs show as "pending" and
+// the next webhook catches up on the state via the normal reconcile flow.
+async function pollApplyJob(jobId: string, deadlineMs: number): Promise<ApplyJobStatus | null> {
+  while (Date.now() < deadlineMs) {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/apply-jobs/${jobId}`);
+      if (res.ok) {
+        const body = await res.json();
+        const job = body?.data as ApplyJobStatus | undefined;
+        if (job && (job.state === "applied" || job.state === "failed" || job.state === "dead")) return job;
+        if (job) {
+          // non-terminal — keep polling, let the body fall through to the sleep
+        }
+      }
+    } catch {
+      // transient — try again
+    }
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+  return null;
+}
 
 async function postWebhook(payload: {
   actionName: "DISBURSE" | "REPAYMENT" | "DAILY_TICK";
@@ -245,6 +295,7 @@ async function postWebhook(payload: {
     loan: payload.loan,
   });
   const sig = await hmacHex(WEBHOOK_SECRET, body);
+  let resp: WebhookResponse | { error: string };
   try {
     const res = await fetch(`${BACKEND_URL}/api/fineract/hooks`, {
       method: "POST",
@@ -252,12 +303,24 @@ async function postWebhook(payload: {
       body,
     });
     const text = await res.text();
-    try { return JSON.parse(text) as WebhookResponse; } catch { return { error: `non-json http ${res.status}: ${text.slice(0, 200)}` }; }
+    try { resp = JSON.parse(text) as WebhookResponse; }
+    catch { resp = { error: `non-json http ${res.status}: ${text.slice(0, 200)}` }; }
   } catch (e) {
-    return { error: `network: ${String(e)}` };
+    resp = { error: `network: ${String(e)}` };
   } finally {
     lastWebhookAt = Date.now();
   }
+  // Level 2: the webhook may 202 with `result.enqueued[]`. Follow each job to
+  // its terminal state so the sim UI reflects what Zoho actually did.
+  if ("data" in resp && resp.data?.result && Array.isArray((resp.data.result as { enqueued?: EnqueuedJob[] }).enqueued)) {
+    const enq = (resp.data.result as { enqueued: EnqueuedJob[] }).enqueued;
+    if (enq.length) {
+      const deadline = Date.now() + 30_000;
+      const settled = await Promise.all(enq.map((j) => pollApplyJob(j.jobId, deadline)));
+      resp.data.jobResults = settled.filter((j): j is ApplyJobStatus => !!j);
+    }
+  }
+  return resp;
 }
 
 function buildSummary(p: Phone, status: FineractLoanSummary["status"], disbursedISO: string, dueISO: string): FineractLoanSummary {
@@ -360,7 +423,12 @@ async function disburse(p: Phone, productId: number) {
   const pr = PRODUCTS[productId] ?? PRODUCTS[1];
   // Local sim state
   p.day = 0;
-  const loanId = `SIM-${String(simLoanCounter++).padStart(6, "0")}`;
+  // Loan IDs include a UUID so they're globally unique across cold starts
+  // and re-disburses. The backend keys events on `auto:<loan_id>:<tier>:<op>`;
+  // if the same ID ever repeats, previous "succeeded" rows would dedup the
+  // retry into a no-op (that's what caused the APPLY_MOVE_NOT_VISIBLE loop).
+  const loanId = `SIM-${crypto.randomUUID().slice(0, 12)}`;
+  simLoanCounter++;
   const disbursedISO = todayDarISO();
   const dueISO = addDaysISO(disbursedISO, pr.term);
   p.loan = { productId, disbursedOn: 0, dueOn: pr.term, status: "active", fineractLoanId: loanId };
@@ -505,9 +573,84 @@ async function serveStatic(path: string): Promise<Response> {
   }
 }
 
-// Sim boots with no phones. Users explicitly pick a real device (LIVE mode)
-// or click "+ Android" / "+ iPhone" to create a sandbox phone — those buttons
-// still work in every mode, just no auto-seed on boot.
+/**
+ * Deno Deploy cold-starts wipe module-memory. Live-mode users would otherwise
+ * lose any device they'd added to the UI — but the authoritative state (active
+ * loan_links in Supabase) is still there. On boot we re-list the enterprise's
+ * active SIM-tagged loan_links, pull the device rows, and recreate each live
+ * phone with its loan + synthetic `day` clock aligned to the current date.
+ *
+ * The sim's day/dpd are stored as integer offsets from the (synthetic) disburse
+ * day. We reconstruct the clock from `today - loan_links.disbursed_on` so the
+ * phone's displayed tier matches what the backend thinks is current.
+ */
+async function hydrateLivePhonesFromSupabase(): Promise<void> {
+  if (!supa) return;
+  try {
+    const { data: links, error } = await supa
+      .from("loan_links")
+      .select("id, device_id, fineract_loan_id, product_id, disbursed_on, due_on")
+      .eq("enterprise_id", SIM_ENTERPRISE_ID)
+      .eq("fineract_client_id", "SIM")
+      .eq("status", "active");
+    if (error) { console.log("[sim] hydrate: loan_links query failed:", error.message); return; }
+    if (!links || !links.length) { console.log("[sim] hydrate: no active SIM loan_links"); return; }
+
+    const deviceIds = links.map((l) => l.device_id);
+    const { data: devs, error: devErr } = await supa
+      .from("devices")
+      .select("id, device_name, platform, serial_number, is_supervised")
+      .in("id", deviceIds);
+    if (devErr) { console.log("[sim] hydrate: devices query failed:", devErr.message); return; }
+    const devById = new Map((devs ?? []).map((d) => [d.id, d]));
+
+    const today = todayDarISO();
+    let hydrated = 0;
+    for (const link of links) {
+      const dev = devById.get(link.device_id);
+      if (!dev) continue;
+      if (phones.has(dev.id)) continue; // already present (shouldn't happen on cold start, but safe)
+      const productId = Number(link.product_id);
+      const pr = PRODUCTS[productId] ?? PRODUCTS[1];
+      const platform: "android" | "ios" = dev.platform === "ios" ? "ios" : "android";
+      const serial = (dev.serial_number as string | null) || dev.id.slice(0, 8);
+      const day = link.disbursed_on ? Math.max(0, daysBetweenISO(link.disbursed_on, today)) : 0;
+
+      const p: Phone = {
+        id: dev.id,
+        name: (dev.device_name as string | null) ?? `Device-${dev.id.slice(0, 6)}`,
+        platform,
+        supervised: Boolean(dev.is_supervised),
+        day,
+        loan: {
+          productId,
+          disbursedOn: 0,
+          dueOn: pr.term,
+          status: "active",
+          fineractLoanId: link.fineract_loan_id,
+          loanLinkRowId: link.id,
+        },
+        tier: "undisbursed",
+        externalId: `SIM-${serial}`,
+        live: true,
+      };
+      p.tier = tierFor(p);
+      phones.set(p.id, p);
+      hydrated++;
+
+      // Counter kept only for display / log noise — new loan IDs are UUIDs,
+      // so collisions are impossible regardless of this value.
+      simLoanCounter++;
+
+      console.log(`[sim] hydrated: ${p.name} loan=${link.fineract_loan_id} day=${day} tier=${p.tier}`);
+    }
+    if (hydrated) console.log(`[sim] hydrated ${hydrated} live phone(s)`);
+  } catch (e) {
+    console.log("[sim] hydrate failed:", String(e));
+  }
+}
+
+if (LIVE) await hydrateLivePhonesFromSupabase();
 
 Deno.serve({ port: PORT, onListen: () => console.log(`LMS Simulator on http://localhost:${PORT}`) }, async (req) => {
   const url = new URL(req.url);
