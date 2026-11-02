@@ -505,9 +505,9 @@ async function serveStatic(path: string): Promise<Response> {
   }
 }
 
-// Seed one offline phone of each platform so the UI is never empty.
-addOfflinePhone("android");
-addOfflinePhone("ios");
+// Sim boots with no phones. Users explicitly pick a real device (LIVE mode)
+// or click "+ Android" / "+ iPhone" to create a sandbox phone — those buttons
+// still work in every mode, just no auto-seed on boot.
 
 Deno.serve({ port: PORT, onListen: () => console.log(`LMS Simulator on http://localhost:${PORT}`) }, async (req) => {
   const url = new URL(req.url);
@@ -570,8 +570,6 @@ Deno.serve({ port: PORT, onListen: () => console.log(`LMS Simulator on http://lo
     feed.length = 0;
     seq = 1;
     simLoanCounter = 1;
-    addOfflinePhone("android");
-    addOfflinePhone("ios");
     return json(state());
   }
 
