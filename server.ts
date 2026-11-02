@@ -210,11 +210,26 @@ type FineractLoanSummary = {
 
 type WebhookResponse = { data?: { trigger?: string; kind?: string; source?: string; result?: unknown; error?: string; note?: string } };
 
+// Pace rapid-fire webhooks so the backend's `withLease("automation:<eid>")`
+// (an in-process mutex) doesn't reject the second one with a null result.
+// For non-localhost backends the extra latency between request completion and
+// next-request start isn't guaranteed to cover the lease-release window — a
+// background daily tick running in parallel can also hold the lease briefly.
+// 600ms is enough breathing room without making the UI feel sticky.
+const MIN_WEBHOOK_GAP_MS = /^(https?:\/\/)?(localhost|127\.)/.test(BACKEND_URL) ? 0 : 600;
+let lastWebhookAt = 0;
+
 async function postWebhook(payload: {
   actionName: "DISBURSE" | "REPAYMENT" | "DAILY_TICK";
   loanId: string;
   loan: FineractLoanSummary;
 }): Promise<WebhookResponse | { error: string }> {
+  if (MIN_WEBHOOK_GAP_MS > 0) {
+    const sinceLast = Date.now() - lastWebhookAt;
+    if (sinceLast < MIN_WEBHOOK_GAP_MS) {
+      await new Promise((r) => setTimeout(r, MIN_WEBHOOK_GAP_MS - sinceLast));
+    }
+  }
   const body = JSON.stringify({
     entityName: "LOAN",
     actionName: payload.actionName,
@@ -232,6 +247,8 @@ async function postWebhook(payload: {
     try { return JSON.parse(text) as WebhookResponse; } catch { return { error: `non-json http ${res.status}: ${text.slice(0, 200)}` }; }
   } catch (e) {
     return { error: `network: ${String(e)}` };
+  } finally {
+    lastWebhookAt = Date.now();
   }
 }
 
