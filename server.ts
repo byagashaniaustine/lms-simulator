@@ -584,6 +584,28 @@ async function serveStatic(path: string): Promise<Response> {
  * day. We reconstruct the clock from `today - loan_links.disbursed_on` so the
  * phone's displayed tier matches what the backend thinks is current.
  */
+// Reconstruct a synthetic (day, loan.status, paidOn) tuple that makes tierFor()
+// return the given tier. Used on cold-start rehydrate so the sim's displayed
+// state matches the backend's device_tier_state.applied_tier instead of
+// drifting with real wall-clock time (Deno Deploy cold-starts previously
+// recomputed day = today - disbursed_on and produced phantom "regress to
+// disbursed" webhooks that failed against the backend's actual tier).
+function syntheticClockForTier(
+  tier: Tier | null,
+  pr: { term: number; kSoft: number; L: number },
+): { day: number; status: "active" | "closed"; paidOn?: number } {
+  switch (tier) {
+    case "released":   return { day: pr.term, status: "closed", paidOn: pr.term };
+    case "locked":     return { day: pr.term + pr.L, status: "active" };
+    case "overdue_2d": return { day: pr.term + pr.kSoft, status: "active" };
+    case "due_2d":     return { day: Math.max(0, pr.term - 2), status: "active" };
+    case "disbursed":
+    case "undisbursed":
+    case null:
+    default:           return { day: 0, status: "active" };
+  }
+}
+
 async function hydrateLivePhonesFromSupabase(): Promise<void> {
   if (!supa) return;
   try {
@@ -597,14 +619,20 @@ async function hydrateLivePhonesFromSupabase(): Promise<void> {
     if (!links || !links.length) { console.log("[sim] hydrate: no active SIM loan_links"); return; }
 
     const deviceIds = links.map((l) => l.device_id);
-    const { data: devs, error: devErr } = await supa
-      .from("devices")
-      .select("id, device_name, platform, serial_number, is_supervised")
-      .in("id", deviceIds);
-    if (devErr) { console.log("[sim] hydrate: devices query failed:", devErr.message); return; }
-    const devById = new Map((devs ?? []).map((d) => [d.id, d]));
+    // Fetch devices and prior tier state in one round-trip pair. The tier state
+    // is authoritative — if the backend has already moved the device to Locked,
+    // we must present the sim in Locked, not whatever wall-clock would suggest.
+    const [devRes, tierRes] = await Promise.all([
+      supa.from("devices").select("id, device_name, platform, serial_number, is_supervised").in("id", deviceIds),
+      supa.from("device_tier_state").select("device_id, applied_tier").in("device_id", deviceIds),
+    ]);
+    if (devRes.error) { console.log("[sim] hydrate: devices query failed:", devRes.error.message); return; }
+    if (tierRes.error) console.log("[sim] hydrate: tier_state query failed (continuing):", tierRes.error.message);
+    const devById = new Map((devRes.data ?? []).map((d) => [d.id, d]));
+    const tierByDevice = new Map(
+      (tierRes.data ?? []).map((t) => [t.device_id as string, t.applied_tier as Tier | null]),
+    );
 
-    const today = todayDarISO();
     let hydrated = 0;
     for (const link of links) {
       const dev = devById.get(link.device_id);
@@ -614,19 +642,21 @@ async function hydrateLivePhonesFromSupabase(): Promise<void> {
       const pr = PRODUCTS[productId] ?? PRODUCTS[1];
       const platform: "android" | "ios" = dev.platform === "ios" ? "ios" : "android";
       const serial = (dev.serial_number as string | null) || dev.id.slice(0, 8);
-      const day = link.disbursed_on ? Math.max(0, daysBetweenISO(link.disbursed_on, today)) : 0;
+      const appliedTier = tierByDevice.get(dev.id) ?? null;
+      const clock = syntheticClockForTier(appliedTier, pr);
 
       const p: Phone = {
         id: dev.id,
         name: (dev.device_name as string | null) ?? `Device-${dev.id.slice(0, 6)}`,
         platform,
         supervised: Boolean(dev.is_supervised),
-        day,
+        day: clock.day,
         loan: {
           productId,
           disbursedOn: 0,
           dueOn: pr.term,
-          status: "active",
+          status: clock.status,
+          paidOn: clock.paidOn,
           fineractLoanId: link.fineract_loan_id,
           loanLinkRowId: link.id,
         },
@@ -642,7 +672,7 @@ async function hydrateLivePhonesFromSupabase(): Promise<void> {
       // so collisions are impossible regardless of this value.
       simLoanCounter++;
 
-      console.log(`[sim] hydrated: ${p.name} loan=${link.fineract_loan_id} day=${day} tier=${p.tier}`);
+      console.log(`[sim] hydrated: ${p.name} loan=${link.fineract_loan_id} applied=${appliedTier ?? "null"} day=${clock.day} tier=${p.tier}`);
     }
     if (hydrated) console.log(`[sim] hydrated ${hydrated} live phone(s)`);
   } catch (e) {
