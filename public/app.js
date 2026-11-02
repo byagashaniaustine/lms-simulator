@@ -240,15 +240,25 @@ function render(st) {
 
     const pill = document.getElementById("modePill");
     const pillText = pill.querySelector(".mode-text");
-    if (s.live) {
-      pill.classList.remove("mode-off"); pill.classList.add("mode-on");
+    pill.classList.remove("mode-on", "mode-off", "mode-sandbox");
+    if (s.sandbox) {
+      pill.classList.add("mode-sandbox");
+      pillText.textContent = "SANDBOX";
+      pill.title = "Public demo build · in-memory engine only · no Supabase or backend calls";
+    } else if (s.live) {
+      pill.classList.add("mode-on");
       pillText.textContent = "LIVE";
       pill.title = `enterprise=${s.enterprise}\nbackend=${s.backend}\nreal devices → loan_links + signed webhook`;
     } else {
-      pill.classList.remove("mode-on"); pill.classList.add("mode-off");
+      pill.classList.add("mode-off");
       pillText.textContent = "OFFLINE";
       pill.title = "live mode disabled — set SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, FINERACT_WEBHOOK_SECRET in env";
     }
+
+    // Hide the "Real device" controls on sandbox builds so users don't try to
+    // use them. Keep the sandbox phone buttons available.
+    const liveControls = document.querySelector(".controls-live");
+    if (liveControls) liveControls.style.display = s.sandbox ? "none" : "";
 
     // phones grid
     const wrap = document.getElementById("phones");

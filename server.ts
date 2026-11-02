@@ -10,7 +10,9 @@
 // Live mode activates when SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, and
 // FINERACT_WEBHOOK_SECRET are all set. Otherwise the UI explains it is offline.
 //
-// Run:  deno run --allow-net --allow-read --allow-env --env-file=../.env lms-simulator/server.ts
+// Run (from this directory):
+//   ./start.sh
+//   # or:  deno run --allow-net --allow-read --allow-env --env-file=.env server.ts
 // Open: http://localhost:8010
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
@@ -24,13 +26,22 @@ const WEBHOOK_SECRET = Deno.env.get("FINERACT_WEBHOOK_SECRET") ?? "";
 const BACKEND_URL = (Deno.env.get("BACKEND_URL") ?? "http://localhost:8000").replace(/\/$/, "");
 const SIM_ENTERPRISE_ID = Deno.env.get("SIM_ENTERPRISE_ID") ?? "4509b6e6-6a8b-4c6c-9ce2-a162cb646705";
 
-const LIVE = Boolean(SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY && WEBHOOK_SECRET);
+// SANDBOX_ONLY: deployed public builds opt in to disable every live-mode path
+// regardless of other env. The in-memory engine still runs — users can play
+// with sandbox phones — but nothing writes to Supabase or posts webhooks.
+// This is how we keep the public .deno.net URL safe to share.
+const SANDBOX_ONLY = (Deno.env.get("SIM_SANDBOX_ONLY") ?? "").toLowerCase() === "true";
+
+const LIVE = !SANDBOX_ONLY && Boolean(SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY && WEBHOOK_SECRET);
 const supa = LIVE
   ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false, autoRefreshToken: false } })
   : null;
 
-console.log(`[sim] mode=${LIVE ? "LIVE" : "OFFLINE"} backend=${BACKEND_URL} enterprise=${SIM_ENTERPRISE_ID}`);
-if (!LIVE) {
+const mode = SANDBOX_ONLY ? "SANDBOX" : LIVE ? "LIVE" : "OFFLINE";
+console.log(`[sim] mode=${mode} backend=${BACKEND_URL} enterprise=${SIM_ENTERPRISE_ID}`);
+if (SANDBOX_ONLY) {
+  console.log(`[sim] SIM_SANDBOX_ONLY=true — all live-mode paths disabled. In-memory engine only.`);
+} else if (!LIVE) {
   const missing = [
     !SUPABASE_URL && "SUPABASE_URL",
     !SUPABASE_SERVICE_ROLE_KEY && "SUPABASE_SERVICE_ROLE_KEY",
@@ -435,8 +446,9 @@ function viewPhone(p: Phone) {
 function state() {
   return {
     live: LIVE,
-    enterprise: SIM_ENTERPRISE_ID,
-    backend: BACKEND_URL,
+    sandbox: SANDBOX_ONLY,
+    enterprise: SANDBOX_ONLY ? null : SIM_ENTERPRISE_ID,
+    backend: SANDBOX_ONLY ? null : BACKEND_URL,
     phones: [...phones.values()].map(viewPhone),
     feed,
   };
@@ -477,11 +489,16 @@ Deno.serve({ port: PORT, onListen: () => console.log(`LMS Simulator on http://lo
   const path = url.pathname;
 
   if (path === "/api/state") return json(state());
-  if (path === "/api/available-devices") return json({ devices: await listAvailableDevices() });
+  if (path === "/api/available-devices") {
+    // Sandbox-only builds never expose the real device inventory.
+    if (SANDBOX_ONLY) return json({ devices: [] });
+    return json({ devices: await listAvailableDevices() });
+  }
 
   if (path === "/api/phones" && req.method === "POST") {
     const b = await req.json().catch(() => ({}));
     if (b.deviceId) {
+      if (SANDBOX_ONLY) return json({ error: "sandbox build: real devices are disabled on this deployment" }, 412);
       if (!LIVE) return json({ error: "live mode is off; set SUPABASE/FINERACT env to use real devices" }, 412);
       const p = await addLivePhoneByDeviceId(String(b.deviceId));
       if (!p) return json({ error: "device not found or not eligible" }, 404);

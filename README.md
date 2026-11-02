@@ -9,9 +9,14 @@ repo stays production-focused and the sim can be deployed on its own.
 
 ## Modes
 
-**Offline** (default). In-memory sandbox. The sim shows the tier engine
-working; nothing writes to Supabase, nothing calls the backend. Perfect for UI
-demos and stakeholder show-and-tell.
+**Sandbox** (set `SIM_SANDBOX_ONLY=true`). In-memory engine only, regardless
+of what other env vars are set. `/api/available-devices` returns empty,
+adding real devices is rejected. Safe for public URLs — nothing can mutate
+Supabase or the backend. **Use this for the deployed demo.**
+
+**Offline** (default, no env). Same engine, but the UI still exposes the
+"+ Real device" controls — they just won't find Supabase credentials and
+show empty. Local dev before you have creds.
 
 **Live**. Pulls real devices from Supabase, writes `loan_links` rows, and
 POSTs signed Fineract-shaped webhooks at the backend. Trips the full apply
@@ -20,8 +25,19 @@ path end to end. Needs:
 - `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`
 - `FINERACT_WEBHOOK_SECRET` (must match the backend's)
 - `BACKEND_URL` (defaults to `http://localhost:8000`)
+- `SIM_SANDBOX_ONLY` **must be absent or `false`**
 
 Copy `.env.example` → `.env` and fill the fields you want.
+
+### Deno Deploy (public URL)
+
+Set these env vars in the dashboard:
+
+- `SIM_SANDBOX_ONLY=true`
+
+That's it. Everything else can be absent; the sim renders its UI and runs
+the tier engine, nothing hits Supabase or the backend. The mode pill shows
+`SANDBOX` and the "+ Real device" controls are hidden.
 
 ## Run
 
