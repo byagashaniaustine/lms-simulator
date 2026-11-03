@@ -37,8 +37,13 @@
     <section class="controls" aria-label="Add device">
       <div class="controls-group controls-live">
         <label class="field-label">Register debtor</label>
-        <input id="debtorName" class="device-select" type="text" placeholder="Debtor name" autocomplete="name" />
-        <input id="debtorEmail" class="device-select" type="email" placeholder="Debtor email" autocomplete="email" title="payment-reminder emails for due_2d / overdue_2d go here" />
+        <div class="mode-toggle" role="tablist" aria-label="Registration mode">
+          <button type="button" id="modeSim" class="mode-btn active" role="tab" aria-selected="true" title="sim-generated loan — walk through tiers manually">Sim loan</button>
+          <button type="button" id="modeFineract" class="mode-btn" role="tab" aria-selected="false" title="attach a real Fineract loan — Fineract fires events, no manual stepping">Fineract loan</button>
+        </div>
+        <input id="debtorName" class="device-select" type="text" placeholder="Debtor name (optional in Fineract mode)" autocomplete="name" />
+        <input id="debtorEmail" class="device-select" type="email" placeholder="Debtor email (auto-filled from Fineract)" autocomplete="email" title="payment-reminder emails for due_2d / overdue_2d go here" />
+        <select id="fineractLoanSelect" class="device-select" title="active Fineract loans" hidden></select>
         <select id="deviceSelect" class="device-select" title="pulled from Supabase devices"></select>
         <button id="addLive" class="btn btn-primary" title="register the debtor against the picked real device">
           <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M11 11V5h2v6h6v2h-6v6h-2v-6H5v-2z"/></svg>
