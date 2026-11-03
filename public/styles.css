@@ -474,6 +474,95 @@ h1 {
   font-size: 12px;
 }
 
+/* Top-level view switcher: Phones vs Loans. */
+.view-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 4px;
+  margin: 16px 0 12px;
+  background: var(--surface-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  width: fit-content;
+}
+.view-tab {
+  background: transparent;
+  color: var(--text-mute);
+  border: 0;
+  font-weight: 600;
+  font-size: 13px;
+  padding: 6px 16px;
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+}
+.view-tab:hover { color: inherit; }
+.view-tab.active { background: var(--surface-1); color: inherit; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+
+/* Loans view: filter chips row + table. */
+.layout-loans { display: flex; flex-direction: column; gap: 12px; }
+.loans-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.loan-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.loan-chip {
+  background: var(--surface-3);
+  color: var(--text-mute);
+  border: 1px solid var(--border-strong);
+  padding: 4px 12px;
+  border-radius: var(--radius-pill);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.loan-chip:hover { color: inherit; }
+.loan-chip.active { background: var(--surface-1); color: inherit; border-color: var(--accent); }
+
+.loans-table { display: flex; flex-direction: column; }
+.loans-row {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1.5fr 1fr 1fr 0.8fr 1.2fr;
+  gap: 10px;
+  padding: 10px 14px;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+}
+.loans-head-row {
+  background: var(--surface-3);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  color: var(--text-mute);
+  text-transform: uppercase;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+}
+.loans-row:last-child { border-bottom: 0; }
+.loans-client > div:first-child { font-weight: 600; }
+.loans-client .small { font-size: 11px; }
+.mono { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 12px; }
+.small { font-size: 11px; }
+
+.loan-tier {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  padding: 2px 10px;
+  border-radius: var(--radius-pill);
+  text-transform: capitalize;
+}
+.loan-tier.tone-info     { background: rgba(62,166,255,.14); color: var(--accent); }
+.loan-tier.tone-warn     { background: rgba(255,196,66,.14); color: #d9a200; }
+.loan-tier.tone-overdue  { background: rgba(255,135,66,.14); color: #ea7a2d; }
+.loan-tier.tone-danger   { background: rgba(230,66,66,.14); color: #d33b3b; }
+.loan-tier.tone-ok       { background: rgba(76,187,114,.14); color: #3fa15b; }
+.loan-tier.tone-neutral  { background: var(--surface-3); color: var(--text-mute); }
+
+.loans-empty {
+  padding: 36px 14px;
+  text-align: center;
+  color: var(--text-mute);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
+}
+
 .x {
   width: 26px; height: 26px;
   display: grid; place-items: center;

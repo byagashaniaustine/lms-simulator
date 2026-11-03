@@ -401,9 +401,110 @@ document.getElementById("resetAll").onclick = async () => {
 const legendEl = document.getElementById("ladder");
 legendEl.replaceChildren(...TIERS.map((t) => h("span", { class: `legend ${t}` }, TIER_LABEL[t])));
 
+// ---------- Loans tab (PR 3): list loan_links joined with devices + tier state
+let currentView = "phones";
+let loanFilter = "all";
+const LOAN_FILTERS = [
+  { key: "all",      label: "All" },
+  { key: "active",   label: "Active" },
+  { key: "overdue",  label: "Overdue" },
+  { key: "locked",   label: "Locked" },
+  { key: "closed",   label: "Closed" },
+];
+const TIER_TONE = {
+  undisbursed: "neutral", disbursed: "info", due_2d: "warn",
+  overdue_2d: "overdue",  locked: "danger",  released: "ok",
+};
+let lastLoanSnapshot = "";
+async function refreshLoans(force = false) {
+  if (currentView !== "loans" && !force) return;
+  const r = await fetch("/api/loan-links").then((x) => x.json()).catch(() => ({ loans: [] }));
+  const loans = Array.isArray(r.loans) ? r.loans : [];
+  // De-dupe render if nothing changed — avoids yanking a scroll position
+  // every 2.5s when the data is stable.
+  const snap = JSON.stringify({ f: loanFilter, n: loans.length, d: loans.map((l) => [l.id, l.applied_tier, l.observed_state, l.status, l.last_reminder_at]) });
+  if (snap === lastLoanSnapshot) return;
+  lastLoanSnapshot = snap;
+
+  // Filter + sort (DPD desc via due_on asc)
+  const filtered = loans.filter((l) => {
+    if (loanFilter === "all") return true;
+    if (loanFilter === "closed") return l.status === "closed";
+    if (loanFilter === "active") return l.status === "active";
+    const tier = l.observed_state ?? l.applied_tier ?? "";
+    if (loanFilter === "overdue") return tier === "overdue_2d" || tier === "due_2d";
+    if (loanFilter === "locked")  return tier === "locked";
+    return true;
+  }).sort((a, b) => {
+    const ta = (a.observed_state ?? a.applied_tier ?? "");
+    const tb = (b.observed_state ?? b.applied_tier ?? "");
+    const sev = { locked: 5, overdue_2d: 4, due_2d: 3, disbursed: 2, undisbursed: 1, released: 0 };
+    return (sev[tb] ?? 0) - (sev[ta] ?? 0);
+  });
+
+  // Chips
+  const chipsEl = document.getElementById("loanChips");
+  chipsEl.replaceChildren(...LOAN_FILTERS.map((f) =>
+    h("button", {
+      type: "button",
+      class: `loan-chip${loanFilter === f.key ? " active" : ""}`,
+      role: "tab",
+      "aria-selected": String(loanFilter === f.key),
+      onclick: () => { loanFilter = f.key; lastLoanSnapshot = ""; refreshLoans(true); },
+    }, f.label)
+  ));
+  document.getElementById("loanCount").textContent = `${filtered.length} shown · ${loans.length} total`;
+
+  const tableEl = document.getElementById("loansTable");
+  if (!filtered.length) {
+    tableEl.replaceChildren(h("div", { class: "loans-empty" }, loans.length ? "No loans match this filter." : "No loans linked yet. Register one from the Phones tab."));
+    return;
+  }
+
+  tableEl.replaceChildren(
+    h("div", { class: "loans-row loans-head-row" },
+      h("span", {}, "Client"),
+      h("span", {}, "Loan#"),
+      h("span", {}, "Device"),
+      h("span", {}, "Tier"),
+      h("span", {}, "Due"),
+      h("span", {}, "Status"),
+      h("span", {}, "Last reminder"),
+    ),
+    ...filtered.map((l) => {
+      const tier = l.observed_state ?? l.applied_tier ?? "—";
+      const tone = TIER_TONE[tier] ?? "neutral";
+      const dueOn = l.due_on ?? "—";
+      const lastRem = l.last_reminder_at ? new Date(l.last_reminder_at).toLocaleString() : "—";
+      return h("div", { class: `loans-row tier-${tier}` },
+        h("span", { class: "loans-client" }, h("div", {}, l.client_name ?? "(no name)"), h("div", { class: "muted small" }, l.client_email ?? "")),
+        h("span", { class: "mono" }, l.fineract_loan_id ?? "—"),
+        h("span", {}, l.device_name ?? "—"),
+        h("span", { class: `loan-tier tone-${tone}` }, tier),
+        h("span", { class: "mono small" }, dueOn),
+        h("span", {}, l.status),
+        h("span", { class: "small muted" }, lastRem),
+      );
+    }),
+  );
+}
+function setView(view) {
+  currentView = view === "loans" ? "loans" : "phones";
+  document.getElementById("tabPhones").classList.toggle("active", currentView === "phones");
+  document.getElementById("tabLoans").classList.toggle("active", currentView === "loans");
+  document.getElementById("tabPhones").setAttribute("aria-selected", String(currentView === "phones"));
+  document.getElementById("tabLoans").setAttribute("aria-selected", String(currentView === "loans"));
+  document.getElementById("viewPhones").hidden = currentView !== "phones";
+  document.getElementById("viewLoans").hidden  = currentView !== "loans";
+  if (currentView === "loans") refreshLoans(true);
+}
+document.getElementById("tabPhones").onclick = () => setView("phones");
+document.getElementById("tabLoans").onclick  = () => setView("loans");
+
 // ---------- boot + poll
 render();
 refreshDevicePicker();
 setInterval(render, 2500);
 setInterval(refreshDevicePicker, 15000);
 setInterval(() => { if (registrationMode === "fineract") refreshFineractLoanPicker(); }, 15000);
+setInterval(refreshLoans, 3000);

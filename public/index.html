@@ -64,7 +64,12 @@
       <div class="ladder" id="ladder"></div>
     </section>
 
-    <main class="layout">
+    <section class="view-tabs" role="tablist" aria-label="View">
+      <button type="button" id="tabPhones" class="view-tab active" role="tab" aria-selected="true">Phones</button>
+      <button type="button" id="tabLoans" class="view-tab" role="tab" aria-selected="false">Loans</button>
+    </section>
+
+    <main class="layout" id="viewPhones">
       <section id="phones" class="phones" aria-label="Devices"></section>
       <aside class="feed" aria-label="Signal feed">
         <div class="feed-head">
@@ -73,6 +78,14 @@
         </div>
         <div id="feed" class="feed-list"></div>
       </aside>
+    </main>
+
+    <main class="layout-loans" id="viewLoans" hidden>
+      <section class="loans-head">
+        <div id="loanChips" class="loan-chips" role="tablist" aria-label="Filter loans by status"></div>
+        <span class="muted small" id="loanCount"></span>
+      </section>
+      <section id="loansTable" class="loans-table" aria-label="Linked loans"></section>
     </main>
 
     <footer class="footer">

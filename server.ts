@@ -797,6 +797,66 @@ Deno.serve({ port: PORT, onListen: () => console.log(`LMS Simulator on http://lo
     return json({ loans });
   }
 
+  // Loans dashboard (PR 3 of the Fineract integration). Lists loan_links for
+  // this enterprise joined with the device + its observed tier state. One row
+  // per linked loan, including a last_reminder_at scalar for the inbox-ping
+  // audit trail.
+  if (path === "/api/loan-links") {
+    if (!supa) return json({ loans: [], note: "sim not in LIVE mode" });
+    try {
+      // No native joins through PostgREST that honor nulls on the dts side
+      // the way we want; one scalar query + two side-lookups is clearer.
+      const { data: links, error } = await supa.from("loan_links")
+        .select("id, device_id, fineract_loan_id, fineract_client_id, client_name, client_email, product_id, disbursed_on, due_on, status, closed_on, created_at")
+        .eq("enterprise_id", SIM_ENTERPRISE_ID)
+        .order("created_at", { ascending: false })
+        .limit(500);
+      if (error) throw error;
+      const deviceIds = [...new Set((links ?? []).map((l) => l.device_id).filter(Boolean))];
+      const emails = [...new Set((links ?? []).map((l) => l.client_email).filter(Boolean))];
+
+      const [devicesRes, tierRes, remRes] = await Promise.all([
+        deviceIds.length ? supa.from("devices").select("id, device_name, platform").in("id", deviceIds) : Promise.resolve({ data: [] }),
+        deviceIds.length ? supa.from("device_tier_state").select("device_id, applied_tier, observed_state, updated_at").in("device_id", deviceIds) : Promise.resolve({ data: [] }),
+        emails.length    ? supa.from("events").select("params, updated_at").eq("action", "payment_reminder.email").in("params->>to", emails).order("updated_at", { ascending: false }).limit(500) : Promise.resolve({ data: [] }),
+      ]);
+      const devByIdM: Record<string, { device_name: string; platform: string }> = {};
+      for (const d of (devicesRes.data ?? [])) devByIdM[d.id as string] = { device_name: d.device_name as string, platform: d.platform as string };
+      const tierByDeviceM: Record<string, { applied_tier: string | null; observed_state: string | null; updated_at: string | null }> = {};
+      for (const t of (tierRes.data ?? [])) tierByDeviceM[t.device_id as string] = { applied_tier: t.applied_tier as string | null, observed_state: t.observed_state as string | null, updated_at: t.updated_at as string | null };
+      const lastReminderByEmail: Record<string, string> = {};
+      for (const e of (remRes.data ?? [])) {
+        const to = (e.params as { to?: string } | null)?.to;
+        if (to && !lastReminderByEmail[to]) lastReminderByEmail[to] = e.updated_at as string;
+      }
+
+      const rows = (links ?? []).map((l) => ({
+        id: l.id,
+        fineract_loan_id: l.fineract_loan_id,
+        fineract_client_id: l.fineract_client_id,
+        client_name: l.client_name,
+        client_email: l.client_email,
+        product_id: l.product_id,
+        disbursed_on: l.disbursed_on,
+        due_on: l.due_on,
+        status: l.status,
+        closed_on: l.closed_on,
+        created_at: l.created_at,
+        device_id: l.device_id,
+        device_name: devByIdM[l.device_id]?.device_name ?? null,
+        platform: devByIdM[l.device_id]?.platform ?? null,
+        applied_tier:    tierByDeviceM[l.device_id]?.applied_tier    ?? null,
+        observed_state:  tierByDeviceM[l.device_id]?.observed_state  ?? null,
+        tier_updated_at: tierByDeviceM[l.device_id]?.updated_at      ?? null,
+        last_reminder_at: l.client_email ? (lastReminderByEmail[l.client_email] ?? null) : null,
+      }));
+      return json({ loans: rows });
+    } catch (e) {
+      console.log("[sim] /api/loan-links failed:", String(e));
+      return json({ loans: [], error: String(e) }, 500);
+    }
+  }
+
   if (path === "/api/available-devices") {
     // Sandbox-only builds never expose the real device inventory.
     if (SANDBOX_ONLY) return json({ devices: [] });
