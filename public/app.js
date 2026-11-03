@@ -177,6 +177,14 @@ function phoneCard(p) {
            h("span", { class: "meta-k" }, "DPD"), h("span", { class: "meta-v mono" }, String(p.dpd))]
         : h("span", { class: "meta-k" }, "no loan"),
     ),
+    (p.clientName || p.clientEmail)
+      ? h("div", { class: "meta", title: "debtor on file; reminder emails on due_2d / overdue_2d go to this address" },
+          h("span", { class: "meta-k" }, "Debtor"),
+          h("span", { class: "meta-v" }, p.clientName || "—"),
+          p.clientEmail ? h("span", { class: "dot" }, "·") : null,
+          p.clientEmail ? h("span", { class: "meta-v mono" }, p.clientEmail) : null,
+        )
+      : null,
     ladder,
     p.live && p.lastBackendResult
       ? h("div", {
@@ -312,9 +320,19 @@ document.getElementById("addLive").onclick = async () => {
   const sel = document.getElementById("deviceSelect");
   const deviceId = sel && sel.value;
   if (!deviceId) { toast("Pick a real device from the dropdown first", "err"); return; }
-  const r = await api("/api/phones", { deviceId });
+  const clientName  = (document.getElementById("debtorName")?.value  ?? "").trim();
+  const clientEmail = (document.getElementById("debtorEmail")?.value ?? "").trim();
+  if (clientEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clientEmail)) {
+    toast("Enter a valid debtor email, or leave it blank", "err"); return;
+  }
+  const r = await api("/api/phones", { deviceId, clientName, clientEmail });
   if (r && r.error) { toast(r.error, "err"); return; }
-  toast(`Added ${r.name ?? "device"}`, "ok");
+  // Clear the form so the next registration starts fresh — selected device
+  // intentionally resets too via refreshDevicePicker on next tick.
+  document.getElementById("debtorName").value = "";
+  document.getElementById("debtorEmail").value = "";
+  const who = clientName ? `${clientName} on ${r.name ?? "device"}` : (r.name ?? "device");
+  toast(`Registered ${who}`, "ok");
   render();
 };
 document.getElementById("resetAll").onclick = async () => {

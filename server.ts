@@ -81,6 +81,12 @@ type Phone = {
   tier: Tier;
   externalId: string;      // "SIM-<serial>" in live mode; blank offline
   live: boolean;           // true if this phone is backed by a real device + supa writes
+  // Debtor identity set by the sim's "register debtor" dashboard. Carried on
+  // the webhook payload (loan.clientName, loan.clientEmail) → persisted to
+  // loan_links on insertLink → read by backend fireReminderEmail for the
+  // due_2d / overdue_2d payment-reminder emails.
+  clientName?: string | null;
+  clientEmail?: string | null;
   lastBackendResult?: unknown;
   // Last backend-driven terminal apply, surfaced from /api/mdm/callback (PR 3).
   // These let the sim's UI show "backend confirmed overdue_2d at 09:12" instead
@@ -193,6 +199,8 @@ async function insertLink(p: Phone, loan: Loan, iso: { disbursed: string; due: s
     disbursed_on: iso.disbursed,
     due_on: iso.due,
     status: "active",
+    client_name: p.clientName ?? null,
+    client_email: p.clientEmail ?? null,
   }).select("id").single();
   if (error) {
     console.log("[sim] insertLink failed:", error.message);
@@ -224,6 +232,7 @@ type FineractLoanSummary = {
   accountNo: string;
   clientId: string | null;
   clientName: string | null;
+  clientEmail: string | null;
   productId: number;
   productName: string | null;
   status: "active" | "closed" | "written_off" | "overpaid" | "pending" | "approved" | "rejected" | "unknown";
@@ -342,7 +351,8 @@ function buildSummary(p: Phone, status: FineractLoanSummary["status"], disbursed
     loanId: loan.fineractLoanId,
     accountNo: `SIM-${loan.fineractLoanId}`,
     clientId: null,
-    clientName: `SIM/${p.name}`,
+    clientName: p.clientName ?? `SIM/${p.name}`,
+    clientEmail: p.clientEmail ?? null,
     productId: loan.productId,
     productName: pr.name,
     status,
@@ -373,7 +383,7 @@ function addOfflinePhone(platform: "android" | "ios"): Phone {
   return p;
 }
 
-async function addLivePhoneByDeviceId(deviceId: string): Promise<Phone | null> {
+async function addLivePhoneByDeviceId(deviceId: string, client?: { name?: string | null; email?: string | null }): Promise<Phone | null> {
   if (!supa) return null;
   const { data, error } = await supa.from("devices")
     .select("id, device_name, platform, serial_number, is_supervised, enterprise_id, is_removed")
@@ -387,16 +397,19 @@ async function addLivePhoneByDeviceId(deviceId: string): Promise<Phone | null> {
   if (data.is_removed) return null;
   const platform: "android" | "ios" = data.platform === "ios" ? "ios" : "android";
   const serial = (data.serial_number as string | null) || data.id.slice(0, 8);
+  const existing = phones.get(data.id);
   const p: Phone = {
     id: data.id,
     name: data.device_name as string ?? `Device-${data.id.slice(0, 6)}`,
     platform,
     supervised: Boolean(data.is_supervised),
-    day: 0,
-    loan: null,
-    tier: "undisbursed",
+    day: existing?.day ?? 0,
+    loan: existing?.loan ?? null,
+    tier: existing?.tier ?? "undisbursed",
     externalId: `SIM-${serial}`,
     live: true,
+    clientName: client?.name ?? existing?.clientName ?? null,
+    clientEmail: client?.email ?? existing?.clientEmail ?? null,
   };
   phones.set(p.id, p);
   return p;
@@ -545,6 +558,17 @@ function viewPhone(p: Phone) {
     externalId: p.externalId,
     loanId: p.loan?.fineractLoanId ?? null,
     lastBackendResult: p.lastBackendResult ?? null,
+    // Debtor identity set by the register-debtor dashboard; used by backend
+    // reminder emails via loan_links.client_name/client_email.
+    clientName: p.clientName ?? null,
+    clientEmail: p.clientEmail ?? null,
+    // Backend-driven apply result, delivered via POST /api/mdm/callback (PR 3).
+    // These are the authoritative tier-state the MDM backend confirmed with
+    // Zoho — the sim's own `tier` is just its local engine's guess.
+    backendTier: p.backendTier ?? null,
+    backendState: p.backendState ?? null,
+    backendError: p.backendError ?? null,
+    backendAt: p.backendAt ?? null,
   };
 }
 
@@ -710,7 +734,14 @@ Deno.serve({ port: PORT, onListen: () => console.log(`LMS Simulator on http://lo
     if (b.deviceId) {
       if (SANDBOX_ONLY) return json({ error: "sandbox build: real devices are disabled on this deployment" }, 412);
       if (!LIVE) return json({ error: "live mode is off; set SUPABASE/FINERACT env to use real devices" }, 412);
-      const p = await addLivePhoneByDeviceId(String(b.deviceId));
+      // Debtor identity is optional on the API but required by the new register
+      // dashboard. Accept whatever's provided and let empty strings pass as null.
+      const name  = typeof b.clientName  === "string" && b.clientName.trim()  ? String(b.clientName).trim()  : null;
+      const email = typeof b.clientEmail === "string" && b.clientEmail.trim() ? String(b.clientEmail).trim() : null;
+      if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        return json({ error: "clientEmail is not a valid email address" }, 400);
+      }
+      const p = await addLivePhoneByDeviceId(String(b.deviceId), { name, email });
       if (!p) return json({ error: "device not found or not eligible" }, 404);
       return json(viewPhone(p), 201);
     }
