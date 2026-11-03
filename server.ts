@@ -23,6 +23,10 @@ const DIR = new URL("./public/", import.meta.url);
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 const WEBHOOK_SECRET = Deno.env.get("FINERACT_WEBHOOK_SECRET") ?? "";
+// Shared secret for callbacks FROM the backend (PR 3). Verified via
+// X-MDM-Signature HMAC-SHA256 header. Blank → callback endpoint 503s so the
+// backend's retry queue holds delivery.
+const CALLBACK_SECRET = Deno.env.get("SIM_CALLBACK_SECRET") ?? "";
 const BACKEND_URL = (Deno.env.get("BACKEND_URL") ?? "http://localhost:8000").replace(/\/$/, "");
 const SIM_ENTERPRISE_ID = Deno.env.get("SIM_ENTERPRISE_ID") ?? "4509b6e6-6a8b-4c6c-9ce2-a162cb646705";
 
@@ -78,6 +82,14 @@ type Phone = {
   externalId: string;      // "SIM-<serial>" in live mode; blank offline
   live: boolean;           // true if this phone is backed by a real device + supa writes
   lastBackendResult?: unknown;
+  // Last backend-driven terminal apply, surfaced from /api/mdm/callback (PR 3).
+  // These let the sim's UI show "backend confirmed overdue_2d at 09:12" instead
+  // of the sim's own tier guess. seenJobIds blocks duplicate deliveries.
+  backendTier?: Tier | null;
+  backendState?: "applied" | "dead";
+  backendError?: string | null;
+  backendAt?: string;      // ISO
+  seenJobIds?: Set<string>;
 };
 
 const phones = new Map<string, Phone>();
@@ -732,6 +744,41 @@ Deno.serve({ port: PORT, onListen: () => console.log(`LMS Simulator on http://lo
       default: return json({ error: "unknown event type" }, 400);
     }
     return json(state());
+  }
+
+  // Backend → sim callback (PR 3). HMAC-signed POST from the MDM worker after
+  // every apply_jobs terminal transition. Idempotent on apply_job_id so a
+  // retry can't double-apply.
+  if (path === "/api/mdm/callback" && req.method === "POST") {
+    if (!CALLBACK_SECRET) return json({ error: "SIM_CALLBACK_SECRET not configured on this sim" }, 503);
+    const raw = await req.text();
+    const sig = req.headers.get("x-mdm-signature") ?? "";
+    const expected = await hmacHex(CALLBACK_SECRET, raw);
+    if (sig.toLowerCase() !== expected) return json({ error: "bad signature" }, 401);
+    let body: Record<string, unknown>;
+    try { body = JSON.parse(raw); } catch { return json({ error: "body not json" }, 400); }
+    const jobId = String(body.apply_job_id ?? "");
+    const deviceId = String(body.device_id ?? "");
+    const state = body.state === "dead" ? "dead" : "applied";
+    const finalTier = (body.final_tier ?? null) as Tier | null;
+    const errorMessage = body.error_message == null ? null : String(body.error_message);
+    const completedAt = String(body.completed_at ?? new Date().toISOString());
+    if (!jobId || !deviceId) return json({ error: "missing fields" }, 400);
+    const phone = phones.get(deviceId);
+    if (!phone) {
+      // We don't know about this device — ack so the backend stops retrying.
+      // (Could be a device the sim never created a phone card for.)
+      return json({ ok: true, note: "device not tracked by sim" });
+    }
+    phone.seenJobIds ??= new Set<string>();
+    if (phone.seenJobIds.has(jobId)) return json({ ok: true, deduped: true });
+    phone.seenJobIds.add(jobId);
+    phone.backendTier = finalTier;
+    phone.backendState = state;
+    phone.backendError = errorMessage;
+    phone.backendAt = completedAt;
+    record(phone, "backend", `backend ${state}${finalTier ? ` → ${finalTier}` : ""}${errorMessage ? ` (${errorMessage.slice(0, 60)})` : ""}`, { backend: { apply_job_id: jobId, state, final_tier: finalTier } });
+    return json({ ok: true });
   }
 
   if (path === "/api/reset-all" && req.method === "POST") {
