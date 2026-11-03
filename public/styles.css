@@ -432,47 +432,6 @@ h1 {
   color: var(--text-mute);
   border: 1px dashed var(--border-strong);
 }
-.live-pill.fineract {
-  background: rgba(159, 122, 234, .14);
-  color: #b393f0;
-  border: 1px solid rgba(159, 122, 234, .35);
-}
-
-/* Mode toggle for the Register panel — "Sim loan" vs "Fineract loan". */
-.mode-toggle {
-  display: inline-flex;
-  gap: 2px;
-  padding: 2px;
-  background: var(--surface-3);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-pill);
-}
-.mode-btn {
-  background: transparent;
-  color: var(--text-mute);
-  border: 0;
-  font-size: 11px;
-  font-weight: 600;
-  padding: 4px 10px;
-  border-radius: var(--radius-pill);
-  cursor: pointer;
-}
-.mode-btn:hover { color: inherit; }
-.mode-btn.active {
-  background: var(--surface-1);
-  color: inherit;
-  box-shadow: 0 1px 2px rgba(0,0,0,.08);
-}
-
-/* Fineract-driven phones replace step buttons with this note. */
-.fineract-note {
-  padding: 6px 10px;
-  background: rgba(159, 122, 234, .08);
-  border: 1px dashed rgba(159, 122, 234, .3);
-  border-radius: var(--radius-sm);
-  color: var(--text-mute);
-  font-size: 12px;
-}
 
 /* Top-level view switcher: Phones vs Loans. */
 .view-tabs {

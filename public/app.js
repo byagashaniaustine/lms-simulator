@@ -109,14 +109,7 @@ function phoneCard(p) {
   );
 
   const btns = [];
-  if (p.fineractLoanId) {
-    // Fineract-bound phones: step buttons are hidden because Fineract fires
-    // the events itself (DISBURSE, DAILY_TICK, REPAYMENT via Mifos COB). The
-    // sim card shows backend-confirmed tier via the callback path.
-    btns.push(h("div", { class: "btn-row fineract-note" },
-      h("span", { class: "lbl" }, "⟳ Driven by Fineract events — no manual stepping"),
-    ));
-  } else if (undis) {
+  if (undis) {
     btns.push(h("div", { class: "btn-row" },
       h("span", { class: "lbl" }, "Disburse"),
       h("button", { class: "btn btn-sm btn-primary", onclick: () => hook(p.id, "disburse", { productId: 1 }) }, "7-Day"),
@@ -136,9 +129,7 @@ function phoneCard(p) {
     ));
   }
 
-  const livePill = p.fineractLoanId
-    ? h("span", { class: "live-pill fineract", title: `Fineract loan ${p.fineractLoanId} — events fire from Mifos` }, `FINERACT · ${p.fineractLoanId}`)
-    : p.live
+  const livePill = p.live
     ? h("span", {
         class: "live-pill on",
         title: `loan_links row + signed webhook to backend\nexternal_id: ${p.externalId ?? ""}`,
@@ -325,45 +316,6 @@ document.getElementById("addIphone").onclick = async () => {
   await api("/api/phones", { platform: "ios" });
   render();
 };
-// Registration mode: "sim" (classic sim-generated loan + manual walkthrough)
-// or "fineract" (attach a real Fineract loan — Mifos fires events, no manual
-// stepping). Toggled by the pill buttons in the Register panel.
-let registrationMode = "sim";
-async function refreshFineractLoanPicker() {
-  const sel = document.getElementById("fineractLoanSelect");
-  if (!sel) return;
-  try {
-    const r = await fetch("/api/fineract/loans").then((x) => x.json());
-    const loans = r?.loans || [];
-    const prior = sel.value;
-    sel.replaceChildren(
-      h("option", { value: "" }, loans.length ? `Choose one of ${loans.length} active loan${loans.length === 1 ? "" : "s"}…` : (r?.note || "No active Fineract loans")),
-      ...loans.map((l) => {
-        const bits = [l.clientName || "—", `#${l.loanId}`, l.productName || ""].filter(Boolean);
-        return h("option", { value: l.loanId }, bits.join(" · "));
-      }),
-    );
-    if (prior && [...sel.options].some((o) => o.value === prior)) sel.value = prior;
-  } catch { /* best effort */ }
-}
-function setRegistrationMode(mode) {
-  registrationMode = mode === "fineract" ? "fineract" : "sim";
-  const isFin = registrationMode === "fineract";
-  document.getElementById("modeSim").classList.toggle("active", !isFin);
-  document.getElementById("modeFineract").classList.toggle("active", isFin);
-  document.getElementById("modeSim").setAttribute("aria-selected", String(!isFin));
-  document.getElementById("modeFineract").setAttribute("aria-selected", String(isFin));
-  const loanSel = document.getElementById("fineractLoanSelect");
-  if (loanSel) loanSel.hidden = !isFin;
-  const nameI = document.getElementById("debtorName");
-  const emailI = document.getElementById("debtorEmail");
-  if (nameI)  nameI.placeholder  = isFin ? "Debtor name (auto-filled from Fineract)"  : "Debtor name";
-  if (emailI) emailI.placeholder = isFin ? "Debtor email (auto-filled from Fineract)" : "Debtor email";
-  if (isFin) refreshFineractLoanPicker();
-}
-document.getElementById("modeSim").onclick = () => setRegistrationMode("sim");
-document.getElementById("modeFineract").onclick = () => setRegistrationMode("fineract");
-
 document.getElementById("addLive").onclick = async () => {
   const sel = document.getElementById("deviceSelect");
   const deviceId = sel && sel.value;
@@ -373,21 +325,14 @@ document.getElementById("addLive").onclick = async () => {
   if (clientEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clientEmail)) {
     toast("Enter a valid debtor email, or leave it blank", "err"); return;
   }
-  const payload = { deviceId, clientName, clientEmail };
-  if (registrationMode === "fineract") {
-    const loanSel = document.getElementById("fineractLoanSelect");
-    const fineractLoanId = loanSel && loanSel.value;
-    if (!fineractLoanId) { toast("Pick a Fineract loan from the dropdown", "err"); return; }
-    payload.fineractLoanId = fineractLoanId;
-  }
-  const r = await api("/api/phones", payload);
+  const r = await api("/api/phones", { deviceId, clientName, clientEmail });
   if (r && r.error) { toast(r.error, "err"); return; }
   // Clear the form so the next registration starts fresh — selected device
   // intentionally resets too via refreshDevicePicker on next tick.
   document.getElementById("debtorName").value = "";
   document.getElementById("debtorEmail").value = "";
   const who = clientName ? `${clientName} on ${r.name ?? "device"}` : (r.name ?? "device");
-  toast(`Registered ${who}${registrationMode === "fineract" ? ` (Fineract #${payload.fineractLoanId})` : ""}`, "ok");
+  toast(`Registered ${who}`, "ok");
   render();
 };
 document.getElementById("resetAll").onclick = async () => {
@@ -506,5 +451,4 @@ render();
 refreshDevicePicker();
 setInterval(render, 2500);
 setInterval(refreshDevicePicker, 15000);
-setInterval(() => { if (registrationMode === "fineract") refreshFineractLoanPicker(); }, 15000);
 setInterval(refreshLoans, 3000);

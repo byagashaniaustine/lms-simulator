@@ -27,9 +27,6 @@ const WEBHOOK_SECRET = Deno.env.get("FINERACT_WEBHOOK_SECRET") ?? "";
 // X-MDM-Signature HMAC-SHA256 header. Blank → callback endpoint 503s so the
 // backend's retry queue holds delivery.
 const CALLBACK_SECRET = Deno.env.get("SIM_CALLBACK_SECRET") ?? "";
-// Shared secret for Fineract-read PROXY calls FROM the sim TO the backend
-// (PR 2 of the Fineract integration). Sent as X-Sim-Proxy-Secret.
-const PROXY_SECRET = Deno.env.get("SIM_PROXY_SECRET") ?? "";
 const BACKEND_URL = (Deno.env.get("BACKEND_URL") ?? "http://localhost:8000").replace(/\/$/, "");
 const SIM_ENTERPRISE_ID = Deno.env.get("SIM_ENTERPRISE_ID") ?? "4509b6e6-6a8b-4c6c-9ce2-a162cb646705";
 
@@ -90,11 +87,6 @@ type Phone = {
   // due_2d / overdue_2d payment-reminder emails.
   clientName?: string | null;
   clientEmail?: string | null;
-  // When set, this phone is bound to a REAL Fineract loan (PR 2). The sim's
-  // step buttons are hidden; Fineract fires events via its own hooks and the
-  // backend reconciles automatically. fineractLoanId is also persisted to
-  // loan_links.fineract_loan_id so webhooks target the right row.
-  fineractLoanId?: string | null;
   lastBackendResult?: unknown;
   // Last backend-driven terminal apply, surfaced from /api/mdm/callback (PR 3).
   // These let the sim's UI show "backend confirmed overdue_2d at 09:12" instead
@@ -233,61 +225,6 @@ async function hmacHex(key: string, msg: string): Promise<string> {
   );
   const sig = await crypto.subtle.sign("HMAC", cryptoKey, enc.encode(msg));
   return Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-// -- Fineract read proxy fetchers (PR 2 of the Fineract integration) ----
-// These call GET /api/fineract/loans + /loans/{id} on the MDM backend, which
-// forwards to the real Fineract API. Blank PROXY_SECRET means the UI's
-// Fineract mode is disabled; the sim still works in Sim-loan mode.
-interface FineractLoanBrief {
-  loanId: string;
-  clientName: string | null;
-  productName: string | null;
-  status: string;
-  externalId: string | null;
-  dueOn: string | null;
-  disbursedOn: string | null;
-  dpd: number;
-}
-async function listFineractLoans(): Promise<FineractLoanBrief[]> {
-  if (!PROXY_SECRET) return [];
-  try {
-    const res = await fetch(`${BACKEND_URL}/api/fineract/loans?status=active&limit=100`, {
-      headers: { "X-Sim-Proxy-Secret": PROXY_SECRET },
-    });
-    if (!res.ok) {
-      console.log("[sim] listFineractLoans failed:", res.status);
-      return [];
-    }
-    const body = await res.json();
-    const loans = body?.data?.loans as Array<Record<string, unknown>> | undefined;
-    return (loans ?? []).map((l) => ({
-      loanId: String(l.loanId ?? l.id ?? ""),
-      clientName: (l.clientName as string | null) ?? null,
-      productName: (l.productName as string | null) ?? null,
-      status: String(l.status ?? "unknown"),
-      externalId: (l.externalId as string | null) ?? null,
-      dueOn: (l.dueOn as string | null) ?? null,
-      disbursedOn: (l.disbursedOn as string | null) ?? null,
-      dpd: Number(l.dpd ?? 0) || 0,
-    }));
-  } catch (e) {
-    console.log("[sim] listFineractLoans error:", String(e));
-    return [];
-  }
-}
-async function getFineractLoan(loanId: string): Promise<{ loan: Record<string, unknown>; client: Record<string, unknown> | null } | null> {
-  if (!PROXY_SECRET) return null;
-  try {
-    const res = await fetch(`${BACKEND_URL}/api/fineract/loans/${encodeURIComponent(loanId)}`, {
-      headers: { "X-Sim-Proxy-Secret": PROXY_SECRET },
-    });
-    if (!res.ok) return null;
-    const body = await res.json();
-    return body?.data ?? null;
-  } catch {
-    return null;
-  }
 }
 
 type FineractLoanSummary = {
@@ -446,7 +383,7 @@ function addOfflinePhone(platform: "android" | "ios"): Phone {
   return p;
 }
 
-async function addLivePhoneByDeviceId(deviceId: string, client?: { name?: string | null; email?: string | null; fineractLoanId?: string | null }): Promise<Phone | null> {
+async function addLivePhoneByDeviceId(deviceId: string, client?: { name?: string | null; email?: string | null }): Promise<Phone | null> {
   if (!supa) return null;
   const { data, error } = await supa.from("devices")
     .select("id, device_name, platform, serial_number, is_supervised, enterprise_id, is_removed")
@@ -473,7 +410,6 @@ async function addLivePhoneByDeviceId(deviceId: string, client?: { name?: string
     live: true,
     clientName: client?.name ?? existing?.clientName ?? null,
     clientEmail: client?.email ?? existing?.clientEmail ?? null,
-    fineractLoanId: client?.fineractLoanId ?? existing?.fineractLoanId ?? null,
   };
   phones.set(p.id, p);
   return p;
@@ -626,7 +562,6 @@ function viewPhone(p: Phone) {
     // reminder emails via loan_links.client_name/client_email.
     clientName: p.clientName ?? null,
     clientEmail: p.clientEmail ?? null,
-    fineractLoanId: p.fineractLoanId ?? null,
     // Backend-driven apply result, delivered via POST /api/mdm/callback (PR 3).
     // These are the authoritative tier-state the MDM backend confirmed with
     // Zoho — the sim's own `tier` is just its local engine's guess.
@@ -789,14 +724,6 @@ Deno.serve({ port: PORT, onListen: () => console.log(`LMS Simulator on http://lo
 
   if (path === "/api/state") return json(state());
 
-  // Proxy: expose the backend's Fineract loan listing to the UI. The sim is
-  // the trusted party (holds PROXY_SECRET); the browser just hits the sim.
-  if (path === "/api/fineract/loans") {
-    if (!PROXY_SECRET) return json({ loans: [], note: "SIM_PROXY_SECRET not set — Fineract mode disabled" });
-    const loans = await listFineractLoans();
-    return json({ loans });
-  }
-
   // Loans dashboard (PR 3 of the Fineract integration). Lists loan_links for
   // this enterprise joined with the device + its observed tier state. One row
   // per linked loan, including a last_reminder_at scalar for the inbox-ping
@@ -875,44 +802,6 @@ Deno.serve({ port: PORT, onListen: () => console.log(`LMS Simulator on http://lo
       if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
         return json({ error: "clientEmail is not a valid email address" }, 400);
       }
-
-      // Fineract-mode: bind this device to a REAL Fineract loan (PR 2). The
-      // sim fetches loan + client via the backend proxy, writes a loan_links
-      // row with the real IDs, and tags the Phone so step buttons stay hidden.
-      const fineractLoanId = typeof b.fineractLoanId === "string" && b.fineractLoanId.trim() ? String(b.fineractLoanId).trim() : null;
-      if (fineractLoanId) {
-        if (!PROXY_SECRET) return json({ error: "Fineract mode disabled: SIM_PROXY_SECRET not set" }, 412);
-        const detail = await getFineractLoan(fineractLoanId);
-        if (!detail?.loan) return json({ error: `Fineract loan ${fineractLoanId} not found` }, 404);
-        const loan = detail.loan as Record<string, unknown>;
-        const client = detail.client as Record<string, unknown> | null;
-        const resolvedName  = name  ?? (client?.displayName as string | null)  ?? (loan.clientName as string | null) ?? null;
-        const resolvedEmail = email ?? (client?.emailAddress as string | null) ?? (loan.clientEmail as string | null) ?? null;
-        const p = await addLivePhoneByDeviceId(String(b.deviceId), { name: resolvedName, email: resolvedEmail, fineractLoanId });
-        if (!p) return json({ error: "device not found or not eligible" }, 404);
-        // Persist loan_links with the REAL Fineract IDs. Backend PR 1's
-        // upsertLoanLink will keep this row in sync on each webhook.
-        if (supa) {
-          const { error } = await supa.from("loan_links").insert({
-            enterprise_id: SIM_ENTERPRISE_ID,
-            device_id: p.id,
-            fineract_loan_id: fineractLoanId,
-            fineract_client_id: (loan.clientId as string | null) ?? null,
-            external_id: (loan.externalId as string | null) ?? p.externalId,
-            product_id: Number(loan.productId ?? 0),
-            disbursed_on: (loan.disbursedOn as string | null) ?? null,
-            due_on: (loan.dueOn as string | null) ?? null,
-            status: "active",
-            client_name: resolvedName,
-            client_email: resolvedEmail,
-          });
-          if (error && !/duplicate key value/i.test(error.message)) {
-            console.log("[sim] fineract loan_links insert failed:", error.message);
-          }
-        }
-        return json(viewPhone(p), 201);
-      }
-
       const p = await addLivePhoneByDeviceId(String(b.deviceId), { name, email });
       if (!p) return json({ error: "device not found or not eligible" }, 404);
       return json(viewPhone(p), 201);
